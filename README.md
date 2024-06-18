@@ -1,6 +1,6 @@
 # CRISPR_screen
 
-#CRISPR_scripts:
+CRISPR_scripts:
 
 **1.mageck_count.sh**  —>  This script is the first one of the our pipeline and it used to run MAGeCK count for processing CRISPR screening data. It takes as input FASTQ files and generate as output a matrix collecting all read counts saved in the specified directory.  It specifies the number of bases to trim from the 5’ end of each read in order to remove adapter sequences or low-quality bases and also specifies the sgRNA list used on the CRISPR screen. The output is a matrix collecting all read counts. 
 
