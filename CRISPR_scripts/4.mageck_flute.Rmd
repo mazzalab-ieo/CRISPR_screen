@@ -1,0 +1,280 @@
+---
+title: "Genome-wide screening CRISPR on A549"
+output: html_document
+date: "2023-10-13"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(fig.width=13, fig.height=8)
+```
+
+
+```{r, include=FALSE}
+#import libraries
+library("MAGeCKFlute")
+library("clusterProfiler")
+library(tidyverse)
+library(pheatmap)
+library(enrichR)
+library(ggExtra)
+```
+
+```{r,  include=FALSE}
+#Load sgrna library
+guides <- read.csv("/data/ky_lib.csv", header = FALSE) 
+dim(guides)[1]  
+
+#input file from mageck mle
+file = "/data/crispr_sep_23_new/crispr_sep_23_mle_ordered.gene_summary.txt"
+#input file from mageck count
+summary_file= "/data/crispr_sep_23_new/crispr_sep_23.countsummary.txt"
+```
+
+```{r,  include=FALSE}
+#FluteMLE(file, treatname="COMBO", ctrlname="IFN", organism="hsa", incorporateDepmap = FALSE, cell_lines = "A549", norm_method = "cell_cycle", scale_cutoff = 2, proj = "A549")
+#scatter_auto <- read.delim("/Users/ieo6412/Desktop/phd/CRISPR/sep23/MAGeCKFlute_A549/Selection/Data_ScatterView_TreatvsCtrl.txt", sep = "\t")
+```
+
+# QUALITY CONTROL
+```{r, echo=FALSE}
+#check normalized counts
+fn = "/data/crispr_sep_23_new/sep23new_sgRNA_count.tsv"
+prova <- read.delim(fn, sep = "\t")
+
+countsummary = read.delim(summary_file, check.names = FALSE)
+sample_order = c("S52687_1","S52688_2","S52689_3","S52690_4","S52691_5","S52692_6","S52693_7","S52694_8","S52695_9","S52696_10","S52697_11","S52698_12")
+countsummary <- countsummary[match(countsummary$Label, sample_order), ]
+
+# Gini index, uniformity of the sequencing read distribution across the different sgRNAs. 
+#A high Gini index suggests that the sgRNA read count is distributed heterogeneously across the target genes, 
+#probable unevenness in CRISPR oligonucleotide synthesis, low-quality viral library packaging, poor efficiency in viral transfection or over-selection during the screens.
+Gini_index <- BarView(countsummary, x = "Label", y = "GiniIndex", ylab = "Gini index", main = "Evenness of sgRNA reads") +
+  scale_y_continuous(limits = c(0,1))+
+  theme_classic(base_size=15)
+ggsave("/results/Gini.png",Gini_index, height = 15, width = 25)
+
+# Missed sgRNAs
+countsummary$Missed = log10(countsummary$Zerocounts)
+missed_guides <- BarView(countsummary, x = "Label", y = "Missed", fill = "#394E80", ylab = "Log10 missed gRNAs", main = "Missed sgRNAs")+
+  theme_classic(base_size=15)
+ggsave("/results/missed_guides.png",missed_guides, height = 15, width = 25)
+
+# Read mapping
+mapping <- MapRatesView(countsummary)+
+  theme_classic(base_size=15)
+ggsave("/results/mapping.png",mapping, height = 15, width = 25)
+
+
+#Percentage of missed sgRNA
+countsummary$Missed = (countsummary$Zerocounts)/countsummary$TotalsgRNAs * 100
+percent_mapping <- IdentBarView(countsummary, x = "Label", y = "Missed", fill = "#394E80",ylab = "Percentage of missed gRNAs", main = "Missed sgRNAs")+
+  scale_y_continuous(limits = c(0,100))+
+  theme_classic(base_size=15)
+ggsave("/results/percent_mapping.png",percent_mapping, height = 15, width = 25)
+
+```
+
+
+Good quality screens are defined by the following criteria:
+-Mapping rates > 65%
+- GiniIndex ~ 0.1 for plasmid or initial state samples, and ~0.2-0.3 for negative selection samples. 
+- <1% missing gRNAs (i.e. gRNAs with zero counts)
+
+The GiniIndex provides information about the distribution of reads across all sgRNA. A GiniIndex close to zero indicates that all reads are distributed approximately equally across all sgRNAs. In contrast, a Gini index close to one suggests that a few gRNAs are over-represented and dominate read counts.
+
+# DOWNSTREAM ANALYSIS
+## Distribution of all gene beta scores
+```{r, echo=FALSE}
+gdata = ReadBeta(file)
+treatname ="COMBO"
+ctrlname="IFN"
+gdata_cc = NormalizeBeta(gdata, id = "Gene", samples=c(ctrlname, treatname),  method="cell_cycle")
+
+
+#distribution all gene beta scores
+density <- DensityView(gdata_cc, samples=c(ctrlname, treatname),linewidth=15)+
+  theme_classic(base_size=15)
+ggsave("/results/density.png",density, height = 15, width = 25)
+
+consistency <- ConsistencyView(gdata_cc, ctrlname, treatname)+
+  theme_classic(base_size=15)
+ggsave("/results/consistency.png",consistency, height = 15, width = 25)
+
+ma_plot <- MAView(gdata_cc, ctrlname, treatname)+
+  theme_classic(base_size=15)
+ggsave("/results/ma_plot.png",ma_plot, height = 15, width = 25)
+
+gdata_cc$Control = rowMeans(gdata_cc[,ctrlname, drop = FALSE])
+gdata_cc$Treatment = rowMeans(gdata_cc[,treatname, drop = FALSE])
+
+violin <- ViolinView(gdata_cc, samples=c(ctrlname, treatname))
+ggsave("/results/violin.png",violin, height = 15, width = 25)
+
+```
+
+# MY ANALYSIS
+```{r, echo=FALSE, warning=FALSE} 
+#2 sd 
+Control_plus <- mean(gdata_cc$Control) + sd(gdata_cc$Control)
+Control_minus <- mean(gdata_cc$Control) - sd(gdata_cc$Control)
+Treatment_minus <- mean(gdata_cc$Treatment) - sd(gdata_cc$Treatment)
+Treatment_plus <- mean(gdata_cc$Treatment) + sd(gdata_cc$Treatment)
+
+p1_original = ScatterView(gdata_cc, x="Control", y="Treatment", label = "Gene", model = "ninesquare", top = 10, display_cut = TRUE, x_cut = c(Control_minus,Control_plus), y_cut = c(Treatment_minus,Treatment_plus), auto_cut_diag = 2)
+final <- ggMarginal(p1_original, type="histogram")
+
+print(final)
+ggsave("/results/sd2/scatter_plot.png",final, height = 15, width = 25)
+
+#remove outliers genes
+gdata_cc_filtered <- gdata_cc %>% filter(Control <4)
+
+#mod sd
+lower_quantile_control <- quantile(gdata_cc_filtered$Control, 0.025)
+upper_quantile_control <- quantile(gdata_cc_filtered$Control, 0.975)
+lower_quantile_treatment <- quantile(gdata_cc_filtered$Treatment, 0.025)
+upper_quantile_treatment <- quantile(gdata_cc_filtered$Treatment, 0.975)
+
+Control_plus <- mean(gdata_cc_filtered$Control) + sd(gdata_cc_filtered$Control)
+Control_minus <- mean(gdata_cc_filtered$Control) - sd(gdata_cc_filtered$Control)
+Treatment_minus <- mean(gdata_cc_filtered$Treatment) - sd(gdata_cc_filtered$Treatment)
+Treatment_plus <- mean(gdata_cc_filtered$Treatment) + sd(gdata_cc_filtered$Treatment)
+
+p1 = ScatterView(gdata_cc_filtered, x="Control", y="Treatment", label = "Gene", model = "ninesquare", top = 10, display_cut = TRUE, x_cut = c(lower_quantile_control,Control_plus), y_cut = c(Treatment_minus,Treatment_plus), auto_cut_diag = 2)
+final <- ggMarginal(p1, type="histogram")
+
+#mod thresholds
+p1 = ScatterView(gdata_cc_filtered, x="Control", y="Treatment", label = "Gene", model = "ninesquare", top = 10, display_cut = TRUE, x_cut = c(lower_quantile_control,upper_quantile_control), y_cut = c(lower_quantile_treatment,upper_quantile_treatment), auto_cut_diag = 1)
+final <- ggMarginal(p1, type="histogram")
+
+#print(final)
+#ggsave("/results/scatter_plot_filtered.png",final, height = 15, width = 25)
+
+library(CRISPRcleanR)
+data("BAGEL_essential")
+query_genes = p1$data$Gene
+essential_genes = p1$data[p1$data$Gene %in% BAGEL_essential,]
+n_essentials <- dim(essential_genes)[1]
+
+essential_genes_plot <- ggplot(p1$data, aes(x=Control, y=Treatment, color = group)) + geom_point() +
+  scale_color_manual(values=c('grey','grey', 'grey', "grey", 'grey')) + 
+  geom_vline(xintercept = Control_plus, linetype = "dashed", color = "grey") +
+  geom_vline(xintercept = Control_minus, linetype = "dashed", color = "grey") +
+  geom_hline(yintercept = Treatment_plus,linetype = "dashed", color="grey") +
+  geom_hline(yintercept = Treatment_minus,linetype = "dashed", color="grey") +
+  geom_point(data= essential_genes, colour = "red")+  
+  annotate("text", x=1, y=1.5, label= paste0("N. essential genes: ",n_essentials), size=10)
+
+
+print(essential_genes_plot)
+ggsave("/results/essential_genes_plot.png",essential_genes_plot, height = 15, width = 25)
+ 
+
+#Custom scatter plot
+# prova <- ggplot(p1$data, aes(x=Control, y=Treatment, color = group)) + geom_point() +
+#   scale_color_manual(values=c("purple","red","orange","blue","grey")) + 
+#   geom_vline(xintercept = 1, linetype = "dashed", color = "grey") +
+#   geom_vline(xintercept = -1, linetype = "dashed", color = "grey") +
+#   geom_hline(yintercept = 1,linetype = "dashed", color="grey") +
+#   geom_hline(yintercept = -1,linetype = "dashed", color="grey")+
+#   theme_classic()
+# 
+# print(prova)
+
+
+#Enrichment with enrichR
+# ErichR
+
+top_genes <- p1$data[p1$data$group == "topcenter", "Gene"]
+bottom_genes <- p1$data[p1$data$group == "bottomcenter", "Gene"]
+
+top_genes_info <- p1$data[p1$data$Gene %in% top_genes,]
+bottom_genes_info <- p1$data[p1$data$Gene %in% bottom_genes,]
+write.csv(top_genes_info,"/results/sd2/top_genes.csv",row.names = FALSE, col.names = FALSE)
+write.csv(bottom_genes_info,"/results/sd2/bottom_genes.csv",row.names = FALSE, col.names = FALSE)
+
+
+setEnrichrSite("Enrichr")
+websiteLive <- TRUE
+
+dbs <- listEnrichrDbs()
+dbs <- c("GO_Molecular_Function_2023", "GO_Cellular_Component_2023", "GO_Biological_Process_2023", "MSigDB_Hallmark_2020", "KEGG_2021_Human", "Reactome_2022")#, "BioCarta_2016")
+
+enriched_top <- list()
+enriched_bottom <- list()
+
+set.seed("123")
+
+# Perform enrichment analysis for each gene lists
+if (websiteLive){
+  enriched_top <- enrichr(top_genes, dbs)
+  enriched_bottom <- enrichr(bottom_genes, dbs)}
+
+go <- c("GO MF_2023", "GO CC_2023", "GO BP_2023", "Hallmark_2020", "KEGG_2021", "Reactome_2022")#, "BioCarta_2016")
+
+#Plots top
+for (db in 1:length(go)){
+  if (dim(enriched_top[[db]])[1] != 0){
+      enrichment_plot <- plotEnrich(enriched_top[[db]],
+                                      showTerms = 20,
+                                      numChar = 40,
+                                      y = "Count",
+                                      orderBy = "Adjusted.P.value",
+                                      title = go[db])
+      
+      ggsave(filename = paste0("/results/sd2/top_",go[[db]],".png"), plot = enrichment_plot)
+  }}
+
+#Plots bottom
+for (db in 1:length(go)){
+  if (dim(enriched_bottom[[db]])[1] != 0){
+      enrichment_plot <- plotEnrich(enriched_bottom[[db]],
+                                      showTerms = 20,
+                                      numChar = 40,
+                                      y = "Count",
+                                      orderBy = "Adjusted.P.value",
+                                      title = go[db])
+      
+      ggsave(filename = paste0("/results/sd2/bottom_",go[[db]],".png"), plot = enrichment_plot)
+}}
+
+```
+
+#lolliplot
+```{r}
+enrichment_bottom_lolli <- enriched_bottom[["Reactome_2022"]] %>%
+  arrange(Adjusted.P.value) %>%
+  mutate(name = factor(Term, levels = Term)) %>%
+  slice_head(n = 20) %>% 
+  ggplot(aes(x = -log10(Adjusted.P.value), y = reorder(factor(Term), -log(Adjusted.P.value)))) +
+           geom_segment(aes(xend = 0, yend = reorder(factor(Term), -log(Adjusted.P.value)), linetype = "dashed", color = "grey")) +
+           geom_point(aes(size = Odds.Ratio, color = "lightblue")) +
+           theme_classic() +
+           guides(colour = "none", linetype = "none")+
+           labs(size = "Odds Ratio", y = "Terms", x = "-log10(Adjusted p-value)")+
+           geom_vline(xintercept = -log10(0.05), linetype="dotted", color = "red", linewidth=1.5)+
+           geom_vline(xintercept = -log10(0.10), linetype="dotted", color = "red", linewidth=0.5)
+
+enrichment_bottom_lolli
+ggsave("/results/sd2/enrichment_bottom_reactome_lolli.png",enrichment_bottom_lolli, height = 15, width = 25)
+
+
+enrichment_top_lolli <- enriched_top[["Reactome_2022"]] %>%
+  arrange(Adjusted.P.value) %>%
+  mutate(name = factor(Term, levels = Term)) %>%
+  slice_head(n = 20) %>% 
+  ggplot(aes(x = -log10(Adjusted.P.value), y = reorder(factor(Term), -log(Adjusted.P.value)))) +
+           geom_segment(aes(xend = 0, yend = reorder(factor(Term), -log(Adjusted.P.value)), linetype = "dashed", color = "grey")) +
+           geom_point(aes(size = Odds.Ratio, color = "lightblue")) +
+           theme_classic() +
+           guides(colour = "none", linetype = "none")+
+           labs(size = "Odds Ratio", y = "Terms", x = "-log10(Adjusted p-value)")+
+           geom_vline(xintercept = -log10(0.05), linetype="dotted", color = "red", linewidth=1.5)+
+           geom_vline(xintercept = -log10(0.10), linetype="dotted", color = "red", linewidth=0.5)
+
+enrichment_top_lolli
+ggsave("/results/sd2/enrichment_top_reactome_lolli.png",enrichment_top_lolli, height = 15, width = 25)
+
+```
+
